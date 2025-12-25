@@ -183,6 +183,15 @@ wheels = [
 ]
 
 [[package]]
+name = "lap"
+version = "0.5.12"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "numpy" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/6c/cf/ef745c8977cbb26fba5f8433fd4bfd6bf009a90802c0a1cc7139e11f478b/lap-0.5.12.tar.gz", hash = "sha256:570b414ea7ae6c04bd49d0ec8cdac1dc5634737755784d44e37f9f668bab44fd", size = 1520169, upload-time = "2024-11-30T14:27:56.096Z" }
+
+[[package]]
 name = "markupsafe"
 version = "3.0.3"
 source = { registry = "https://pypi.org/simple" }
@@ -457,6 +466,7 @@ name = "padel-vision"
 version = "0.1.0"
 source = { virtual = "." }
 dependencies = [
+    { name = "lap" },
     { name = "ultralytics" },
 ]
 
@@ -466,7 +476,10 @@ dev = [
 ]
 
 [package.metadata]
-requires-dist = [{ name = "ultralytics", specifier = ">=8.3.241" }]
+requires-dist = [
+    { name = "lap", specifier = ">=0.5.12" },
+    { name = "ultralytics", specifier = ">=8.3.241" },
+]
 
 [package.metadata.requires-dev]
 dev = [{ name = "ruff", specifier = ">=0.14.10" }]

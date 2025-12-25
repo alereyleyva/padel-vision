@@ -4,6 +4,7 @@ version = "0.1.0"
 description = "Computer vision applied to padel"
 requires-python = ">=3.14"
 dependencies = [
+    "lap>=0.5.12",
     "ultralytics>=8.3.241",
 ]
 
