@@ -3,4 +3,6 @@ name = "padel-vision"
 version = "0.1.0"
 description = "Computer vision applied to padel"
 requires-python = ">=3.14"
-dependencies = []
+dependencies = [
+    "ultralytics>=8.3.241",
+]
