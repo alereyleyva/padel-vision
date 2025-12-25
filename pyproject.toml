@@ -5,6 +5,7 @@ description = "Computer vision applied to padel"
 requires-python = ">=3.14"
 dependencies = [
     "lap>=0.5.12",
+    "mediapipe>=0.10.31",
     "ultralytics>=8.3.241",
 ]
 
