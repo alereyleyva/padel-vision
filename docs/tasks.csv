@@ -1,0 +1,30 @@
+Title,Description,Priority,Labels
+Definir alcance del MVP,"Definir cámara objetivo, duración de vídeo soportada, 2 vs 4 jugadores, salida (nivel 0-7 + confidence + métricas).",1,Producto
+Definir criterio de nivel 0-7,"Documentar escala 0-7 y bandas (0-2,3-4,5-7) y qué métricas la respaldan.",1,Producto
+Normalizar entrada de vídeo,"Pipeline: reescalar a 720p/960p, fijar fps, generar video_id, validar codec y duración.",1,Ingesta
+Exportar pose+tracking a Parquet,"Implementar export frame-persona con bbox, keypoints (x,y,conf), track_id, timestamp. Guardar con snappy.",1,Datos
+Añadir chequeos de calidad de datos,"% frames con detecciones, % keypoints fiables, tracks por vídeo, detecciones por frame, log de errores.",2,Datos
+Configurar tracker y parámetros,"Probar ByteTrack/BoT-SORT si aplica, ajustar conf/iou/imgsz, persist/stream, medir switches de ID.",1,Tracking/Pose
+Coser tracks (ID stitching) básico,"Heurística: unir tracks por cercanía temporal/espacial cuando hay oclusiones/reapariciones.",2,Tracking/Pose
+Filtrado de tracks cortos,"Eliminar tracks con menos de N frames o baja confianza promedio.",2,Tracking/Pose
+Limpieza de keypoints,"Aplicar NaN a keypoints con conf < umbral y manejar interpolación opcional.",2,Datos
+Suavizado temporal de keypoints,"Implementar EMA por track_id (y opcional OneEuro) para reducir jitter.",2,Datos
+Calibración de cancha (homografía) manual,"Herramienta simple: seleccionar 4 puntos y guardar matriz H por setup; convertir pixel->cancha.",1,Cancha
+Inferir posición del jugador (centro de masa),"Definir COM con cadera/hombros; convertir a coords cancha si hay homografía.",2,Features
+Segmentación de rallies sin pelota,"Detectar tramos de juego usando presencia jugadores + velocidad/actividad sostenida + pausas.",1,Segmentación
+Generar dataset por rally,"Para cada rally: métricas por jugador + metadatos (duración, intensidad, calidad).",2,Datos
+Implementar features v1 (10-20) robustas,"Velocidad/accel, área cubierta, distancia a red, estabilidad tronco, preparación proxy, sincronía pareja.",1,Features
+Implementar explainability v1,"Devolver top métricas que empujan nivel arriba/abajo + tablas resumen.",2,Producto
+Scoring v1 por reglas,"Definir scores 0-1 (movimiento, estabilidad, posicionamiento, coordinación) y mapear a 0-7.",1,Scoring
+Confidence score,"Basado en calidad de datos, cobertura de rally, estabilidad de IDs, cantidad de frames útiles.",1,Scoring
+Evaluación offline básica,"MAE en nivel, accuracy por bandas, consistencia intra-jugador (mismo jugador varios vídeos).",1,Evaluación
+Recogida de vídeos semilla,"Conseguir 50-150 vídeos cortos con cámara consistente; guardar consent/metadata.",1,Datos
+Proceso de etiquetado rápido,"Formulario para entrenadores: nivel 0-7 + confianza + notas; guías de etiquetado.",1,Datos
+Entrenar baseline tabular,"Entrenar Ridge/RandomForest/GBM con features agregadas por vídeo/rally; comparar vs reglas.",2,Scoring
+Validación por splits adecuados,"Split por jugador/cámara; evitar leakage; report por condiciones (interior/exterior).",2,Evaluación
+CLI end-to-end,"Comando único: video -> parquet -> rallies -> features -> nivel -> reporte JSON.",2,Infra
+Report JSON estable,"Definir esquema de salida: nivel, confidence, métricas, warnings de calidad, timestamps rallies.",2,Infra
+Visual debug overlay,"Script para renderizar skeleton + track_id + zonas cancha (opcional) para depurar.",3,Infra
+Gestión de configuración,"Config YAML/JSON para umbrales, modelo, resolución, paths; reproducibilidad de runs.",3,Infra
+Contenerización ligera (opcional),"Dockerfile o instrucciones para entorno reproducible.",4,Infra
+Demo simple (local),"Interfaz mínima: cargar vídeo y ver nivel + métricas; puede ser CLI o web ligera.",3,Producto
