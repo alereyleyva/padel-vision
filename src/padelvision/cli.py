@@ -17,8 +17,17 @@ from padelvision.core.detector import PlayerDetector
 from padelvision.core.feature_extractor import FeatureExtractor
 from padelvision.core.pose_estimator import PoseEstimator
 from padelvision.core.preprocessor import VideoPreprocessor
+from padelvision.core.scoring_engine import ScoringEngine
+from padelvision.core.shot_classifier import ShotClassifier
 from padelvision.core.visualizer import Visualizer
-from padelvision.types import ImpactEvent, PoseLandmarks
+from padelvision.types import (
+    FrameFeatures,
+    ImpactEvent,
+    PlayerScore,
+    PlayerTrack,
+    PoseLandmarks,
+    Shot,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -42,6 +51,9 @@ SKELETON_CONNECTIONS = [
     (24, 26),  # right_hip -> right_knee
     (26, 28),  # right_knee -> right_ankle
 ]
+
+LANDMARK_SHOULDER_L = 11
+LANDMARK_SHOULDER_R = 12
 
 
 def draw_detections(
@@ -109,6 +121,96 @@ def _draw_skeleton(frame: np.ndarray, pose: PoseLandmarks) -> None:
             cv2.circle(frame, (int(kp.x), int(kp.y)), 3, (0, 255, 255), -1)
 
 
+def _compute_ball_above_head(
+    detection,
+    pose: PoseLandmarks | None,
+    ball_x: float | None,
+    ball_y: float | None,
+) -> bool:
+    """Check if the ball is above the player's head at this frame."""
+    if pose is None or ball_y is None or len(pose.keypoints) < LANDMARK_SHOULDER_R + 1:
+        return False
+
+    left_shoulder = pose.keypoints[LANDMARK_SHOULDER_L]
+    right_shoulder = pose.keypoints[LANDMARK_SHOULDER_R]
+
+    if not (left_shoulder.is_visible and right_shoulder.is_visible):
+        return False
+
+    shoulder_y = min(left_shoulder.y, right_shoulder.y)
+    return ball_y < shoulder_y
+
+
+def _compute_average_elbow_angle(
+    all_features: list[FrameFeatures],
+) -> float:
+    """Compute average elbow angle across all frames."""
+    angles = [f.elbow_angle for f in all_features if f.elbow_angle is not None]
+    if not angles:
+        return 0.0
+    return sum(angles) / len(angles)
+
+
+def _compute_average_speed(
+    all_features: list[FrameFeatures],
+) -> float:
+    """Compute average player speed in m/s (approximate from px/s)."""
+    speeds = [f.player_speed for f in all_features if f.player_speed is not None]
+    if not speeds:
+        return 0.0
+    avg_px_s = sum(speeds) / len(speeds)
+    return avg_px_s / 100.0
+
+
+def _compute_avg_ball_speed(
+    ball_trajectory,
+) -> float:
+    """Compute average ball speed in km/h."""
+    if not ball_trajectory or not ball_trajectory.speed_kmh:
+        return 0.0
+    speeds = [s for s in ball_trajectory.speed_kmh if s > 0]
+    if not speeds:
+        return 0.0
+    return sum(speeds) / len(speeds)
+
+
+def _compute_position_optimality(
+    all_features: list[FrameFeatures],
+) -> float:
+    """Compute how close to optimal court positions (0-1)."""
+    positions = [f.court_position for f in all_features if f.court_position is not None]
+    if not positions:
+        return 0.0
+
+    optimal_center = (0.5, 0.5)
+    distances = []
+    for x, y in positions:
+        dist = ((x - optimal_center[0]) ** 2 + (y - optimal_center[1]) ** 2) ** 0.5
+        max_dist = (0.5**2 + 0.5**2) ** 0.5
+        distances.append(1.0 - dist / max_dist)
+
+    return sum(distances) / len(distances)
+
+
+def _compute_court_coverage(
+    all_features: list[FrameFeatures],
+    grid_size: int = 4,
+) -> float:
+    """Compute percentage of court grid cells visited by player."""
+    positions = [f.court_position for f in all_features if f.court_position is not None]
+    if not positions:
+        return 0.0
+
+    visited: set[tuple[int, int]] = set()
+    for x, y in positions:
+        cell_x = min(int(x * grid_size), grid_size - 1)
+        cell_y = min(int(y * grid_size), grid_size - 1)
+        visited.add((cell_x, cell_y))
+
+    total_cells = grid_size * grid_size
+    return len(visited) / total_cells
+
+
 def run_pipeline(
     video_path: str | Path,
     output_path: str | Path | None = None,
@@ -118,6 +220,9 @@ def run_pipeline(
     skip_pose: bool = False,
     skip_ball: bool = False,
     skip_features: bool = False,
+    skip_classifier: bool = False,
+    skip_scoring: bool = False,
+    scoring_config_path: str | Path | None = None,
     target_fps: int = 25,
     max_dimension: int = 1280,
     show: bool = False,
@@ -135,7 +240,7 @@ def run_pipeline(
     logger.info("=" * 60)
 
     # 1. Load and preprocess video
-    logger.info("[1/5] Loading video...")
+    logger.info("[1/7] Loading video...")
     preprocessor = VideoPreprocessor(target_fps=target_fps, max_dimension=max_dimension)
     metadata = preprocessor.load(video_path)
     logger.info(
@@ -152,27 +257,43 @@ def run_pipeline(
         logger.info("  No court ROI detected, using full frame")
 
     # 2. Player detection
-    logger.info("[2/5] Initializing player detector...")
+    logger.info("[2/7] Initializing player detector...")
     detector = PlayerDetector(model_size=model_size, device=device)
 
     # 3. Pose estimation
     pose_estimator = None
     if not skip_pose:
-        logger.info(f"[3/5] Initializing pose estimator (complexity={pose_complexity})...")
+        logger.info(f"[3/7] Initializing pose estimator (complexity={pose_complexity})...")
         pose_estimator = PoseEstimator(model_complexity=pose_complexity)
 
     # 4. Ball tracking
     ball_tracker = None
     if not skip_ball:
         weights = tracknet_weights or "models/tracknet/track.pt"
-        logger.info(f"[4/5]Initializing ball tracker (weights={weights})...")
+        logger.info(f"[4/7] Initializing ball tracker (weights={weights})...")
         ball_tracker = BallTracker(weights_path=weights, device=device)
 
     # 5. Feature extraction
     feature_extractor = None
     if not skip_features:
-        logger.info("[5/5] Initializing feature extractor...")
+        logger.info("[5/7] Initializing feature extractor...")
         feature_extractor = FeatureExtractor()
+
+    # 6. Shot classification
+    shot_classifier = None
+    if not skip_classifier:
+        logger.info("[6/7] Initializing shot classifier...")
+        shot_classifier = ShotClassifier(fps=metadata.fps)
+
+    # 7. Scoring engine
+    scoring_engine = None
+    if not skip_scoring:
+        if scoring_config_path:
+            logger.info(f"[7/7] Initializing scoring engine (config={scoring_config_path})...")
+            scoring_engine = ScoringEngine.from_file(scoring_config_path)
+        else:
+            logger.info("[7/7] Initializing scoring engine (defaults)...")
+            scoring_engine = ScoringEngine()
 
     visualizer = Visualizer()
 
@@ -210,11 +331,77 @@ def run_pipeline(
 
     # Feature extraction
     all_impacts: list[ImpactEvent] = []
+    player_features: dict[int, list[FrameFeatures]] = {}
     if feature_extractor and ball_trajectory:
-        # Build player tracks for feature extraction
         player_tracks = _build_player_tracks(all_detections, all_poses)
         all_impacts = feature_extractor.detect_impacts(player_tracks, ball_trajectory, metadata.fps)
         logger.info(f"  Detected {len(all_impacts)} impact events")
+
+        # Extract features per player and compute ball_above_head
+        ball_pos_by_frame = {p.frame_idx: p for p in ball_trajectory.positions}
+        for track_id, track in player_tracks.items():
+            features = feature_extractor.extract_features(
+                track,
+                ball_trajectory,
+                (metadata.width, metadata.height),
+                court_roi,
+                metadata.fps,
+            )
+            # Compute ball_above_head for each feature
+            enhanced_features: list[FrameFeatures] = []
+            for feat in features:
+                det = track.detections.get(feat.frame_idx)
+                pose = track.poses.get(feat.frame_idx)
+                ball_pos = ball_pos_by_frame.get(feat.frame_idx)
+                ball_x = ball_pos.x if ball_pos and ball_pos.is_detected else None
+                ball_y = ball_pos.y if ball_pos and ball_pos.is_detected else None
+                ball_above = _compute_ball_above_head(det, pose, ball_x, ball_y)
+                enhanced_features.append(
+                    FrameFeatures(
+                        frame_idx=feat.frame_idx,
+                        elbow_angle=feat.elbow_angle,
+                        shoulder_rotation=feat.shoulder_rotation,
+                        hip_rotation=feat.hip_rotation,
+                        knee_bend=feat.knee_bend,
+                        weight_transfer=feat.weight_transfer,
+                        court_position=feat.court_position,
+                        player_speed=feat.player_speed,
+                        distance_to_ball=feat.distance_to_ball,
+                        stroke_phase=feat.stroke_phase,
+                        ball_above_head=ball_above,
+                    )
+                )
+            player_features[track_id] = enhanced_features
+
+    # Shot classification
+    player_shots: dict[int, list[Shot]] = {}
+    if shot_classifier and ball_trajectory:
+        for track_id, features in player_features.items():
+            impacts_for_player = [i for i in all_impacts if i.player_id == track_id]
+            shots = shot_classifier.classify_all(features, impacts_for_player, metadata.fps)
+            player_shots[track_id] = shots
+            if shots:
+                logger.info(f"  Player {track_id}: {len(shots)} shots classified")
+                shot_types = {}
+                for s in shots:
+                    shot_types[s.shot_type] = shot_types.get(s.shot_type, 0) + 1
+                logger.info(f"    Distribution: {shot_types}")
+
+    # Scoring
+    player_scores: dict[int, PlayerScore] = {}
+    if scoring_engine and ball_trajectory:
+        for track_id, features in player_features.items():
+            shots = player_shots.get(track_id, [])
+            metrics = ScoringEngine().compute_metrics_from_data(
+                shots=shots,
+                avg_elbow_angle=_compute_average_elbow_angle(features),
+                avg_speed_ms=_compute_average_speed(features),
+                avg_ball_speed_kmh=_compute_avg_ball_speed(ball_trajectory),
+                avg_position_optimality=_compute_position_optimality(features),
+                court_coverage_pct=_compute_court_coverage(features),
+            )
+            score = scoring_engine.compute_score(metrics)
+            player_scores[track_id] = score
 
     # Second pass: annotate and write output
     logger.info("Annotating output...")
@@ -228,7 +415,12 @@ def run_pipeline(
             annotated = visualizer.draw_trajectory(annotated, ball_trajectory, i)
 
             if show_bounces:
-                annotated = visualizer.draw_bounces(annotated, ball_trajectory.bounces, ball_trajectory.positions, i)
+                annotated = visualizer.draw_bounces(
+                    annotated,
+                    ball_trajectory.bounces,
+                    ball_trajectory.positions,
+                    i,
+                )
 
         if show_impacts and all_impacts:
             annotated = visualizer.draw_impacts(annotated, all_impacts, i)
@@ -259,8 +451,15 @@ def run_pipeline(
     logger.info(f"Total pipeline time: {time.time() - start_time:.1f}s")
 
     # JSON output
-    if json_output and ball_trajectory:
-        _write_json_output(json_output, metadata, ball_trajectory, all_impacts)
+    if json_output:
+        _write_json_output(
+            json_output,
+            metadata,
+            ball_trajectory,
+            all_impacts,
+            player_shots,
+            player_scores,
+        )
 
     # Cleanup
     if writer is not None:
@@ -281,10 +480,8 @@ def run_pipeline(
 def _build_player_tracks(
     all_detections: list[list],
     all_poses: list[list],
-) -> dict:
+) -> dict[int, PlayerTrack]:
     """Build player tracks from detection and pose data across all frames."""
-    from padelvision.types import PlayerTrack
-
     tracks: dict[int, PlayerTrack] = {}
 
     for frame_idx, (detections, poses) in enumerate(zip(all_detections, all_poses)):
@@ -295,7 +492,6 @@ def _build_player_tracks(
             tracks[tid].detections[frame_idx] = detection
 
         for pose in poses:
-            # Match pose to player by proximity (simplified)
             for detection in detections:
                 tid = detection.track_id
                 if tid in tracks:
@@ -310,29 +506,64 @@ def _write_json_output(
     metadata,
     ball_trajectory,
     impacts: list[ImpactEvent],
+    player_shots: dict[int, list[Shot]],
+    player_scores: dict[int, PlayerScore],
 ) -> None:
     """Write analysis results to a JSON file."""
-    result = {
+    result: dict = {
         "video_duration_sec": metadata.duration_sec,
         "fps_analyzed": metadata.fps,
-        "ball_trajectory": {
+    }
+
+    if ball_trajectory:
+        result["ball_trajectory"] = {
             "total_frames": len(ball_trajectory.positions),
             "detected_frames": sum(1 for p in ball_trajectory.positions if p.is_detected and not p.interpolated),
             "detection_rate": sum(1 for p in ball_trajectory.positions if p.is_detected and not p.interpolated)
             / max(1, len(ball_trajectory.positions)),
             "bounces": ball_trajectory.bounces,
-        },
-        "impacts": [
-            {
-                "frame": imp.frame_idx,
-                "player_id": imp.player_id,
-                "ball_x": imp.ball_x,
-                "ball_y": imp.ball_y,
-                "confidence": imp.confidence,
+        }
+
+    result["impacts"] = [
+        {
+            "frame": imp.frame_idx,
+            "player_id": imp.player_id,
+            "ball_x": imp.ball_x,
+            "ball_y": imp.ball_y,
+            "confidence": imp.confidence,
+        }
+        for imp in impacts
+    ]
+
+    if player_shots:
+        result["players"] = []
+        for track_id in sorted(player_shots.keys()):
+            shots = player_shots[track_id]
+            player_data: dict = {
+                "player_id": track_id,
+                "shots": [
+                    {
+                        "type": s.shot_type,
+                        "frame": s.frame_idx,
+                        "timestamp_sec": s.timestamp_sec,
+                        "confidence": s.confidence,
+                        "quality_score": s.quality_score,
+                    }
+                    for s in shots
+                ],
+                "shot_distribution": {},
             }
-            for imp in impacts
-        ],
-    }
+            for s in shots:
+                player_data["shot_distribution"][s.shot_type] = player_data["shot_distribution"].get(s.shot_type, 0) + 1
+
+            if track_id in player_scores:
+                score = player_scores[track_id]
+                player_data["score"] = {
+                    "global": score.global_score,
+                    "breakdown": score.breakdown,
+                }
+
+            result["players"].append(player_data)
 
     with open(json_path, "w") as f:
         json.dump(result, f, indent=2)
@@ -341,7 +572,7 @@ def _write_json_output(
 
 def main() -> None:
     parser = argparse.ArgumentParser(
-        description="PadelVision — Analyze padel video: players, poses, ball, and features.",
+        description="PadelVision — Analyze padel video: players, poses, ball, shots, and scores.",
     )
     parser.add_argument(
         "video",
@@ -374,6 +605,14 @@ def main() -> None:
     parser.add_argument("--no-pose", action="store_true", help="Skip pose estimation")
     parser.add_argument("--no-ball", action="store_true", help="Skip ball tracking")
     parser.add_argument("--no-features", action="store_true", help="Skip feature extraction")
+    parser.add_argument("--no-classifier", action="store_true", help="Skip shot classification")
+    parser.add_argument("--no-scoring", action="store_true", help="Skip scoring engine")
+    parser.add_argument(
+        "--scoring-config",
+        type=str,
+        default=None,
+        help="Path to scoring config JSON",
+    )
     parser.add_argument("--target-fps", type=int, default=25, help="Target FPS")
     parser.add_argument("--max-dimension", type=int, default=1280, help="Max dimension")
     parser.add_argument("--show", action="store_true", help="Display in real-time")
@@ -404,6 +643,9 @@ def main() -> None:
         skip_pose=args.no_pose,
         skip_ball=args.no_ball,
         skip_features=args.no_features,
+        skip_classifier=args.no_classifier,
+        skip_scoring=args.no_scoring,
+        scoring_config_path=args.scoring_config,
         target_fps=args.target_fps,
         max_dimension=args.max_dimension,
         show=args.show,
