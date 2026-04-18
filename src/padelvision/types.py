@@ -261,6 +261,7 @@ class FrameFeatures:
     player_speed: float | None = None
     distance_to_ball: float | None = None
     stroke_phase: StrokePhase = "none"
+    ball_above_head: bool = False
 
 
 @dataclass(frozen=True)
