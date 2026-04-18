@@ -244,6 +244,36 @@ class PlayerScore:
         }
 
 
+StrokePhase = Literal["loading", "impact", "followthrough", "none"]
+
+
+@dataclass(frozen=True)
+class FrameFeatures:
+    """Geometric and semantic features for one player in one frame."""
+
+    frame_idx: int
+    elbow_angle: float | None = None
+    shoulder_rotation: float | None = None
+    hip_rotation: float | None = None
+    knee_bend: float | None = None
+    weight_transfer: float | None = None
+    court_position: tuple[float, float] | None = None
+    player_speed: float | None = None
+    distance_to_ball: float | None = None
+    stroke_phase: StrokePhase = "none"
+
+
+@dataclass(frozen=True)
+class ImpactEvent:
+    """A detected impact between a player and the ball."""
+
+    frame_idx: int
+    player_id: int
+    ball_x: float
+    ball_y: float
+    confidence: float
+
+
 @dataclass
 class PlayerMetrics:
     """Aggregated metrics for a player, used to compute the score."""
