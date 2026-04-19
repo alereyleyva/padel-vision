@@ -68,5 +68,10 @@ def analyze_video_task(
 
     except Exception as exc:
         logger.exception(f"[{job_id}] Analysis failed")
+        max_retries = getattr(self, "max_retries", 0) or 0
+        if self.request.retries < max_retries:
+            store.update_job_status(job_id, "queued", 0.0, error=f"Retrying after error: {exc}")
+            raise self.retry(exc=exc, countdown=5)
+
         store.update_job_status(job_id, "failed", error=str(exc))
-        raise self.retry(exc=exc, countdown=5)
+        raise

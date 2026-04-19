@@ -100,6 +100,7 @@ class PoseLandmarks:
 
     keypoints: list[Keypoint] = field(default_factory=list)
     frame_idx: int = 0
+    player_id: int | None = None
 
     MEDIAPIPE_KEYPOINT_NAMES: list[str] = field(
         default_factory=lambda: [

@@ -62,7 +62,7 @@ class ResultStore:
     def save_result(self, job_id: str, result: PipelineResult) -> str:
         """Save pipeline result as JSON and update job record."""
         result_path = self.base_dir / f"{job_id}.json"
-        with open(result_path, "w") as f:
+        with open(result_path, "w", encoding="utf-8") as f:
             json.dump(asdict(result), f, indent=2)
 
         self.update_job_status(job_id, "completed", 1.0)
@@ -90,8 +90,22 @@ class ResultStore:
         if not result_path.exists():
             return None
 
-        with open(result_path) as f:
+        with open(result_path, encoding="utf-8") as f:
             return json.load(f)
+
+    def delete_job(self, job_id: str) -> bool:
+        """Delete a job row and any files associated with it."""
+        job = self.get_job(job_id)
+        if job is None:
+            return False
+
+        self._unlink_if_present(job.get("result_path"))
+        self._unlink_if_present(job.get("video_path"))
+
+        with sqlite3.connect(self.db_path) as conn:
+            conn.execute("DELETE FROM jobs WHERE job_id = ?", (job_id,))
+
+        return True
 
     def cleanup_expired(self) -> int:
         """Remove results older than TTL. Returns count of deleted jobs."""
@@ -99,15 +113,20 @@ class ResultStore:
         with sqlite3.connect(self.db_path) as conn:
             conn.row_factory = sqlite3.Row
             expired = conn.execute(
-                "SELECT job_id, result_path FROM jobs WHERE created_at < ?",
+                "SELECT job_id, result_path, video_path FROM jobs WHERE created_at < ?",
                 (cutoff,),
             ).fetchall()
 
             deleted = 0
             for row in expired:
-                if row["result_path"]:
-                    Path(row["result_path"]).unlink(missing_ok=True)
+                self._unlink_if_present(row["result_path"])
+                self._unlink_if_present(row["video_path"])
                 conn.execute("DELETE FROM jobs WHERE job_id = ?", (row["job_id"],))
                 deleted += 1
 
             return deleted
+
+    @staticmethod
+    def _unlink_if_present(path: str | None) -> None:
+        if path:
+            Path(path).unlink(missing_ok=True)

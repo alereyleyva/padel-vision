@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import sqlite3
 from unittest.mock import patch
 
 import pytest
@@ -123,6 +124,25 @@ def test_analyze_sync_runs_pipeline(client, tmp_path):
     assert len(data["players"]) == 1
 
 
+def test_analyze_async_falls_back_to_sync_result(client, tmp_path):
+    video_path = tmp_path / "test.mp4"
+    video_path.write_bytes(b"\x00" * 1024)
+    mock_result = PipelineResult(video_duration_sec=12.0, fps_analyzed=25.0, players=[])
+
+    test_store = ResultStore(base_dir=str(tmp_path / "results"), ttl_hours=24)
+
+    with patch("padelvision.api.main.store", test_store):
+        with patch("padelvision.api.main.PipelineManager") as mock_manager:
+            with patch("padelvision.api.tasks.analyze_video_task.delay", side_effect=RuntimeError("broker down")):
+                mock_manager.return_value.run.return_value = mock_result
+
+                with open(video_path, "rb") as f:
+                    response = client.post("/analyze", files={"video": ("test.mp4", f, "video/mp4")})
+
+    assert response.status_code == 200
+    assert response.json()["video_duration_sec"] == 12.0
+
+
 def test_get_results_for_completed_job(client, tmp_path):
     """Test retrieving results for a completed job."""
     store = ResultStore(base_dir=str(tmp_path / "results"), ttl_hours=24)
@@ -185,3 +205,25 @@ def test_delete_job(client, tmp_path):
 
         job = store.get_job(job_id)
         assert job is None
+
+
+def test_analyze_sync_failure_marks_job_failed(client, tmp_path):
+    video_path = tmp_path / "test.mp4"
+    video_path.write_bytes(b"\x00" * 1024)
+    test_store = ResultStore(base_dir=str(tmp_path / "results"), ttl_hours=24)
+
+    with patch("padelvision.api.main.store", test_store):
+        with patch("padelvision.api.main.PipelineManager") as mock_manager:
+            mock_manager.return_value.run.side_effect = RuntimeError("pipeline exploded")
+
+            with open(video_path, "rb") as f:
+                response = client.post("/analyze/sync", files={"video": ("test.mp4", f, "video/mp4")})
+
+    assert response.status_code == 500
+    with sqlite3.connect(test_store.db_path) as conn:
+        conn.row_factory = sqlite3.Row
+        row = conn.execute("SELECT status, error FROM jobs").fetchone()
+
+    assert row is not None
+    assert row["status"] == "failed"
+    assert "pipeline exploded" in row["error"]

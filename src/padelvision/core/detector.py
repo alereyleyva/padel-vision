@@ -62,12 +62,14 @@ class PlayerDetector:
 
         Returns a list (one per frame) of PlayerDetection objects.
         """
-        results = self._model.predict(
+        results = self._model.track(
             source=list(frames),
             classes=[PERSON_CLASS_ID],
             conf=self._conf,
             iou=self._iou,
+            tracker="bytetrack.yaml",
             device=self._device,
+            persist=True,
             verbose=False,
         )
 

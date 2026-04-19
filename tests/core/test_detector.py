@@ -2,6 +2,12 @@
 
 from __future__ import annotations
 
+from types import SimpleNamespace
+from typing import Any, cast
+
+import numpy as np
+import torch
+
 from padelvision.core.detector import PlayerDetector
 from padelvision.types import BBox, BoundingBox, PlayerDetection
 
@@ -39,6 +45,37 @@ class TestCourtFiltering:
             confidence=0.9,
         )
         assert not PlayerDetector._is_in_court(detection, court_roi)
+
+
+class TestBatchTracking:
+    def test_detect_frames_uses_tracker_ids(self) -> None:
+        frame = np.zeros((32, 32, 3), dtype=np.uint8)
+        fake_box = SimpleNamespace(
+            id=torch.tensor([7]),
+            xyxy=torch.tensor([[1.0, 2.0, 10.0, 20.0]]),
+            conf=torch.tensor([0.95]),
+        )
+        fake_result = SimpleNamespace(boxes=[fake_box])
+
+        class FakeModel:
+            def __init__(self) -> None:
+                self.track_called = False
+
+            def track(self, **kwargs):
+                self.track_called = True
+                return [fake_result]
+
+        detector = PlayerDetector.__new__(PlayerDetector)
+        detector._model = cast(Any, FakeModel())
+        detector._device = "cpu"
+        detector._conf = 0.45
+        detector._iou = 0.5
+
+        detections = detector.detect_frames([frame])
+
+        assert detector._model.track_called is True
+        assert len(detections) == 1
+        assert detections[0][0].track_id == 7
 
 
 class TestTeamAssignment:

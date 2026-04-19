@@ -192,7 +192,11 @@ class PoseEstimator:
                 )
             )
 
-        return PoseLandmarks(keypoints=keypoints, frame_idx=frame_idx)
+        return PoseLandmarks(
+            keypoints=keypoints,
+            frame_idx=frame_idx,
+            player_id=detection.track_id,
+        )
 
     def estimate_batch(
         self,

@@ -61,7 +61,7 @@ class PlayerResponse(BaseModel):
 
     player_id: int
     team: int | None
-    score: PlayerScoreResponse
+    score: PlayerScoreResponse | None = None
     shots: list[ShotResponse]
     stats: PlayerStats
 

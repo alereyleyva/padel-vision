@@ -13,13 +13,15 @@ from scipy.interpolate import CubicSpline
 from scipy.signal import savgol_filter
 
 from padelvision.core.tracknet_model import TrackNet, extract_ball_position
-from padelvision.types import BallPosition, BallTrajectory
+from padelvision.types import BallPosition, BallTrajectory, BoundingBox
 
 logger = logging.getLogger(__name__)
 
 DEFAULT_INPUT_SIZE = (288, 512)
 DEFAULT_CONFIDENCE_THRESHOLD = 0.5
 DEFAULT_MODEL_PATH = Path("models/tracknet/track.pt")
+PADEL_COURT_WIDTH_METERS = 10.0
+PADEL_COURT_LENGTH_METERS = 20.0
 
 
 class BallTracker:
@@ -71,12 +73,14 @@ class BallTracker:
         self,
         frames: list[np.ndarray],
         fps: float = 25.0,
+        court_roi: BoundingBox | None = None,
     ) -> BallTrajectory:
         """Track the ball across all frames and return a BallTrajectory.
 
         Args:
             frames: List of BGR frames (numpy arrays).
             fps: Video FPS, used for speed computation.
+            court_roi: Approximate court ROI used to convert pixels to meters.
 
         Returns:
             BallTrajectory with positions, bounces, and speeds.
@@ -90,7 +94,12 @@ class BallTracker:
         trajectory = BallTrajectory(positions=positions)
 
         trajectory.bounces = self._detect_bounces(trajectory, fps)
-        trajectory.speed_kmh = self._compute_speeds(trajectory, fps)
+        trajectory.speed_kmh = self._compute_speeds(
+            trajectory,
+            fps,
+            court_roi=court_roi,
+            frame_shape=frames[0].shape,
+        )
 
         detected_count = sum(1 for p in positions if p.is_detected and not p.interpolated)
         total_count = len(positions)
@@ -230,13 +239,20 @@ class BallTracker:
 
         return bounces
 
-    def _compute_speeds(self, trajectory: BallTrajectory, fps: float) -> list[float]:
-        """Compute ball speed in km/h between consecutive detections."""
+    def _compute_speeds(
+        self,
+        trajectory: BallTrajectory,
+        fps: float,
+        court_roi: BoundingBox | None,
+        frame_shape: tuple[int, ...],
+    ) -> list[float]:
+        """Compute approximate ball speed in km/h between consecutive detections."""
         detected = [p for p in trajectory.positions if p.is_detected]
 
         if len(detected) < 2 or fps <= 0:
             return []
 
+        meters_per_px = self._estimate_meters_per_px(court_roi, frame_shape)
         speeds: list[float] = []
 
         for i in range(1, len(detected)):
@@ -258,9 +274,35 @@ class BallTracker:
 
             dt_sec = frame_delta / fps
             speed_px_per_sec = dist_px / dt_sec
-            speeds.append(speed_px_per_sec)
+            speed_ms = float(speed_px_per_sec * meters_per_px)
+            speeds.append(speed_ms * 3.6)
 
         return speeds
+
+    @staticmethod
+    def _estimate_meters_per_px(
+        court_roi: BoundingBox | None,
+        frame_shape: tuple[int, ...],
+    ) -> float:
+        """Estimate meters per pixel from court dimensions.
+
+        This is still an approximation because the court is projected with perspective,
+        but it is materially better than treating raw pixels/second as km/h.
+        """
+        frame_h, frame_w = frame_shape[:2]
+        roi_width = court_roi.width if court_roi is not None else float(frame_w)
+        roi_height = court_roi.height if court_roi is not None else float(frame_h)
+
+        scales = []
+        if roi_width > 0:
+            scales.append(PADEL_COURT_WIDTH_METERS / roi_width)
+        if roi_height > 0:
+            scales.append(PADEL_COURT_LENGTH_METERS / roi_height)
+
+        if not scales:
+            return 1.0
+
+        return float(sum(scales) / len(scales))
 
     def close(self) -> None:
         self._model = self._model.cpu()

@@ -105,7 +105,9 @@ def test_get_result_nonexistent_job(tmp_store):
 
 def test_cleanup_expired(tmp_store, tmp_path):
     job_id = "test-job-6"
-    tmp_store.create_job(job_id, str(tmp_path / "video.mp4"))
+    video_path = tmp_path / "video.mp4"
+    video_path.write_bytes(b"video")
+    tmp_store.create_job(job_id, str(video_path))
 
     result = PipelineResult(
         video_duration_sec=10.0,
@@ -124,6 +126,7 @@ def test_cleanup_expired(tmp_store, tmp_path):
 
     deleted = tmp_store.cleanup_expired()
     assert deleted == 1
+    assert not video_path.exists()
 
     job = tmp_store.get_job(job_id)
     assert job is None
@@ -145,3 +148,23 @@ def test_cleanup_no_expired(tmp_store, tmp_path):
 
     job = tmp_store.get_job(job_id)
     assert job is not None
+
+
+def test_delete_job_removes_video_and_result_files(tmp_store, tmp_path):
+    job_id = "test-job-8"
+    video_path = tmp_path / "video.mp4"
+    video_path.write_bytes(b"video")
+    tmp_store.create_job(job_id, str(video_path))
+
+    result = PipelineResult(video_duration_sec=10.0, fps_analyzed=25.0, players=[])
+    result_path = Path(tmp_store.save_result(job_id, result))
+
+    assert video_path.exists()
+    assert result_path.exists()
+
+    deleted = tmp_store.delete_job(job_id)
+
+    assert deleted is True
+    assert not video_path.exists()
+    assert not result_path.exists()
+    assert tmp_store.get_job(job_id) is None

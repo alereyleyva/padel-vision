@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import torch
 
+from padelvision.core.ball_tracker import BallTracker
 from padelvision.core.tracknet_model import TrackNet, extract_ball_position
+from padelvision.types import BallPosition, BallTrajectory, BoundingBox
 
 
 class TestTrackNetModel:
@@ -64,3 +66,24 @@ class TestExtractBallPosition:
         heatmap = torch.zeros(100, 200)
         result = extract_ball_position(heatmap, confidence_threshold=0.5)
         assert result is None
+
+
+class TestBallTrackerSpeeds:
+    def test_compute_speeds_converts_to_kmh_using_court_scale(self) -> None:
+        tracker = BallTracker.__new__(BallTracker)
+        trajectory = BallTrajectory(
+            positions=[
+                BallPosition(frame_idx=0, x=0.0, y=0.0, confidence=1.0),
+                BallPosition(frame_idx=25, x=100.0, y=0.0, confidence=1.0),
+            ]
+        )
+
+        speeds = tracker._compute_speeds(
+            trajectory,
+            fps=25.0,
+            court_roi=BoundingBox(x=0.0, y=0.0, width=1000.0, height=2000.0),
+            frame_shape=(720, 1280, 3),
+        )
+
+        assert len(speeds) == 1
+        assert abs(speeds[0] - 3.6) < 0.05
